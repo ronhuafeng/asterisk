@@ -1,0 +1,39 @@
+{
+  "rules": [
+    {
+      "condition": {
+        "from": "boss@example.com"
+      },
+      "actions": {
+        "addLabelIds": ["VIP"],
+        "removeLabelIds": ["INBOX"]
+      }
+    },
+    {
+      "condition": {
+        "subjectContains": "invoice"
+      },
+      "actions": {
+        "addLabelIds": ["FINANCE"],
+        "removeLabelIds": ["INBOX"]
+      }
+    },
+    {
+      "condition": {
+        "bodyContains": "reminder"
+      },
+      "actions": {
+        "createMemo": true
+      }
+    },
+    {
+      "condition": {
+        "bodyContains": "urgent"
+      },
+      "actions": {
+        "addLabelIds": ["URGENT"],
+        "createMemo": true
+      }
+    }
+  ]
+}

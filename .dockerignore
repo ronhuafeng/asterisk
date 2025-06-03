@@ -1,0 +1,8 @@
+node_modules
+npm-debug.log
+Dockerfile
+.dockerignore
+token.json
+credentials.json
+*.md
+# Add any other files/directories you don't want in the image

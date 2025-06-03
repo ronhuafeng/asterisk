@@ -13,6 +13,13 @@ const path = require('path');
 const express = require('express');
 const bodyParser = require('body-parser');
 const {google} = require('googleapis');
+const CryptoJS = require("crypto-js");
+
+// IMPORTANT: Use environment variable in production for ENCRYPTION_KEY
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "your-super-secret-key-for-token-encryption";
+
+// Add multer for file uploads
+const multer = require('multer');
 
 // 如果需要同时调用 Google Tasks API，请在此一并加入 tasks 范围
 const SCOPES = [
@@ -24,6 +31,17 @@ const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
 const TOKEN_PATH = path.join(__dirname, 'token.json');
 
 let oAuth2Client = null;
+
+// Configure multer for file storage
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, __dirname); // Save in the root directory
+  },
+  filename: function (req, file, cb) {
+    cb(null, 'credentials.json'); // Save as credentials.json
+  }
+});
+const upload = multer({ storage: storage });
 
 // ------------------ 1. 初始化 OAuth2 客户端 ------------------
 
@@ -51,13 +69,37 @@ function loadCredentials() {
  */
 function authorize() {
   if (fs.existsSync(TOKEN_PATH)) {
-    // 已有 token.json，直接加载
-    const tokenContent = fs.readFileSync(TOKEN_PATH, 'utf8');
-    oAuth2Client.setCredentials(JSON.parse(tokenContent));
-    console.log('[OAuth] 已加载本地 token.json，OAuth2 客户端已授权。');
-    startPolling();
+    try {
+      const encryptedTokenContent = fs.readFileSync(TOKEN_PATH, 'utf8');
+      const bytes = CryptoJS.AES.decrypt(encryptedTokenContent, ENCRYPTION_KEY);
+      const decryptedTokenContent = bytes.toString(CryptoJS.enc.Utf8);
+
+      if (!decryptedTokenContent) {
+        // This can happen if the key is wrong or the content is not valid ciphertext
+        throw new Error("Decryption resulted in empty content. Key might be wrong or data corrupted.");
+      }
+
+      oAuth2Client.setCredentials(JSON.parse(decryptedTokenContent));
+      console.log('[OAuth] Loaded and decrypted token.json. OAuth2 client authorized.');
+      startPolling();
+    } catch (decErr) {
+      console.error(`[OAuth] Error decrypting token.json: ${decErr.message}. Deleting potentially corrupted token. Please re-authorize.`);
+      try {
+        fs.unlinkSync(TOKEN_PATH); // Delete corrupted or non-decryptable token
+      } catch (unlinkErr) {
+        console.error(`[OAuth] Error deleting corrupted token.json: ${unlinkErr.message}`);
+      }
+      // Generate new auth URL as token is now gone/invalid
+      const authUrl = oAuth2Client.generateAuthUrl({
+        access_type: 'offline',
+        scope: SCOPES,
+      });
+      console.log('Please visit the following URL in your browser to re-authorize:');
+      console.log(authUrl);
+      console.log('\nAfter authorization, you will be redirected to: http://localhost:3000/oauth2callback?code=XXXX');
+    }
   } else {
-    // 没有 token.json，生成授权 URL
+    // No token.json, generate auth URL
     const authUrl = oAuth2Client.generateAuthUrl({
       access_type: 'offline',
       scope: SCOPES,
@@ -83,15 +125,26 @@ app.get('/oauth2callback', async (req, res) => {
   try {
     const {tokens} = await oAuth2Client.getToken(code);
     oAuth2Client.setCredentials(tokens);
-    // 将 token 写入本地
-    fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
-    console.log('[OAuth] 授权成功，已将 token 保存至 token.json。');
-    res.send('授权成功！你可以关闭此页面。');
-    // 立即启动轮询
-    startPolling();
+
+    try {
+        const encryptedTokens = CryptoJS.AES.encrypt(JSON.stringify(tokens), ENCRYPTION_KEY).toString();
+        fs.writeFileSync(TOKEN_PATH, encryptedTokens); // Save encrypted data
+        console.log('[OAuth] 授权成功，已将 token 保存至 token.json (encrypted)。');
+        res.send('授权成功！你可以关闭此页面。');
+        // 立即启动轮询
+        startPolling();
+    } catch (encErr) {
+        console.error('[OAuth] Error encrypting token:', encErr);
+        res.status(500).send('授权失败，无法加密凭证，请查看服务器日志。');
+        return;
+    }
+
   } catch (err) {
     console.error('[OAuth] 通过 code 换取 token 时出错：', err.message);
-    res.status(500).send('授权失败，请查看服务器日志。');
+    // Check if the error is related to the token request itself, not our encryption
+    if (!res.headersSent) {
+        res.status(500).send('授权失败，请查看服务器日志。');
+    }
   }
 });
 
@@ -164,94 +217,135 @@ async function pollAndProcess() {
         console.log(`   主题：${subject}`);
         console.log(`   日期：${dateStr}`);
 
-        // 3. 根据自定义规则判断
-        let needArchive = false;
-        let needLabelVIP = false;
-        let needCreateMemo = false;
-
-        // 举例：如果发件人是 boss@example.com，就打 VIP 并归档
-        if (/boss@example\.com/i.test(from)) {
-          needArchive = true;
-          needLabelVIP = true;
-        }
-        // 举例：正文包含 “提醒” 字样，就生成备忘录
-        if (/提醒/.test(bodyText)) {
-          needCreateMemo = true;
+        // Load rules
+        let rules = [];
+        try {
+            const rulesContent = fs.readFileSync(path.join(__dirname, 'rules.json'), 'utf8');
+            rules = JSON.parse(rulesContent).rules;
+        } catch (err) {
+            console.error(`[Rules] Error reading rules.json: ${err.message}. Proceeding without external rules.`);
         }
 
-        // 4. 打标签逻辑
-        let vipLabelId = null;
-        if (needLabelVIP) {
-          const labelRes = await gmail.users.labels.list({userId: 'me'});
-          const allLabels = labelRes.data.labels || [];
-          const existVIP = allLabels.find(l => l.name === 'VIP');
-          if (existVIP) {
-            vipLabelId = existVIP.id;
-          } else {
-            const createLabelRes = await gmail.users.labels.create({
-              userId: 'me',
-              requestBody: {
-                name: 'VIP',
-                labelListVisibility: 'labelShow',
-                messageListVisibility: 'show'
-              }
-            });
-            vipLabelId = createLabelRes.data.id;
-            console.log(`   [标签] 已创建 “VIP”，ID=${vipLabelId}`);
-          }
-          // 给邮件添加 VIP 标签
-          await gmail.users.messages.modify({
-            userId: 'me',
-            id: msgId,
-            requestBody: {
-              addLabelIds: [vipLabelId]
+        // Initialize action flags for each message
+        let labelsToAdd = [];
+        let labelsToRemove = []; // UNREAD will be added later if no other actions dictate it
+        let shouldCreateMemo = false;
+        // let shouldArchive = false; // This can be inferred from 'INBOX' in labelsToRemove
+
+        // 3. Apply rules from rules.json
+        for (const rule of rules) {
+            let conditionMet = false;
+            const ruleCondition = rule.condition;
+            if (ruleCondition.from && from.toLowerCase().includes(ruleCondition.from.toLowerCase())) {
+                conditionMet = true;
             }
-          });
-          console.log(`   [标签] 已添加 “VIP”。`);
-        }
-
-        // 5. 归档操作（移除 INBOX 标签）
-        if (needArchive) {
-          await gmail.users.messages.modify({
-            userId: 'me',
-            id: msgId,
-            requestBody: {
-              removeLabelIds: ['INBOX']
+            if (ruleCondition.subjectContains && subject.toLowerCase().includes(ruleCondition.subjectContains.toLowerCase())) {
+                conditionMet = true;
             }
-          });
-          console.log(`   [归档] 已归档（移出收件箱）。`);
+            if (ruleCondition.bodyContains && bodyText.toLowerCase().includes(ruleCondition.bodyContains.toLowerCase())) {
+                conditionMet = true;
+            }
+
+            if (conditionMet) {
+                console.log(`   [Rules] Email ID=${msgId} matched rule:`, ruleCondition);
+                if (rule.actions.addLabelIds) {
+                    labelsToAdd = [...new Set([...labelsToAdd, ...rule.actions.addLabelIds])];
+                }
+                if (rule.actions.removeLabelIds) {
+                    labelsToRemove = [...new Set([...labelsToRemove, ...rule.actions.removeLabelIds])];
+                }
+                if (rule.actions.createMemo) {
+                    shouldCreateMemo = true;
+                }
+            }
         }
 
-        // 6. 生成备忘录（示例：写入 Google Tasks）
-        if (needCreateMemo) {
-          try {
-            const tasks = google.tasks({version: 'v1', auth: oAuth2Client});
-            const title = `邮件备忘：${subject}`;
-            const notes = `发件人：${from}\n日期：${dateStr}\n\n正文预览：\n${bodyText.substring(0, 200)}...`;
-            await tasks.tasks.insert({
-              tasklist: '@default',
-              requestBody: {
-                title,
-                notes,
-                due: null
-              }
+        // 4. 生成备忘录 (if needed)
+        if (shouldCreateMemo) {
+            try {
+                const tasks = google.tasks({version: 'v1', auth: oAuth2Client});
+                const title = `邮件备忘：${subject}`;
+                const notes = `发件人：${from}\n日期：${dateStr}\n\n正文预览：\n${bodyText.substring(0, 200)}...`;
+                await tasks.tasks.insert({
+                    tasklist: '@default',
+                    requestBody: {
+                        title,
+                        notes,
+                        due: null
+                    }
+                });
+                console.log(`   [备忘] 已在 Google Tasks 中创建待办。`);
+            } catch (tasksErr) {
+                console.warn(`   [备忘] Google Tasks 创建失败：${tasksErr.message}`);
+            }
+        }
+
+        // 5. 统一执行邮件修改 (add labels, remove labels including UNREAD)
+        let finalLabelIdsToAdd = [];
+        if (labelsToAdd.length > 0) {
+            const gmailClientForLabels = getGmailClient();
+            const labelListRes = await gmailClientForLabels.users.labels.list({ userId: 'me' });
+            const googleLabels = labelListRes.data.labels || [];
+            for (const labelNameToAdd of labelsToAdd) {
+                let foundLabel = googleLabels.find(l => l.name.toLowerCase() === labelNameToAdd.toLowerCase());
+                if (foundLabel) {
+                    finalLabelIdsToAdd.push(foundLabel.id);
+                } else {
+                    try {
+                        console.log(`   [标签] Label "${labelNameToAdd}" not found, creating it.`);
+                        const createdLabel = await gmailClientForLabels.users.labels.create({
+                            userId: 'me',
+                            requestBody: { name: labelNameToAdd, labelListVisibility: 'labelShow', messageListVisibility: 'show' }
+                        });
+                        finalLabelIdsToAdd.push(createdLabel.data.id);
+                        console.log(`   [标签] Created new label "${labelNameToAdd}" with ID ${createdLabel.data.id}`);
+                    } catch (createLabelError) {
+                        console.error(`   [标签] Failed to create label "${labelNameToAdd}": ${createLabelError.message}`);
+                    }
+                }
+            }
+        }
+
+        // Ensure 'UNREAD' is always in labelsToRemove unless other rules dictate otherwise
+        // and it's not explicitly kept by some advanced rule (not implemented here)
+        if (!labelsToRemove.includes('UNREAD')) {
+             labelsToRemove.push('UNREAD');
+        }
+
+        // Deduplicate finalLabelIdsToAdd and labelsToRemove
+        finalLabelIdsToAdd = [...new Set(finalLabelIdsToAdd)];
+        labelsToRemove = [...new Set(labelsToRemove)];
+
+        if (finalLabelIdsToAdd.length > 0 || labelsToRemove.length > 0) {
+            console.log(`   [Modify] Applying actions to Email ID=${msgId}: AddLabels: [${labelsToAdd.join(', ')} (IDs: ${finalLabelIdsToAdd.join(',')})], RemoveLabels: [${labelsToRemove.join(', ')}]`);
+            try {
+                await gmail.users.messages.modify({
+                    userId: 'me',
+                    id: msgId,
+                    requestBody: {
+                        addLabelIds: finalLabelIdsToAdd,
+                        removeLabelIds: labelsToRemove
+                    }
+                });
+                if (labelsToRemove.includes('UNREAD')) console.log(`   [状态] 已标记为已读。`);
+                if (labelsToRemove.includes('INBOX')) console.log(`   [归档] 已归档（移出收件箱）。`);
+                if (finalLabelIdsToAdd.length > 0) console.log(`   [标签] 已应用标签: ${labelsToAdd.join(', ')}`);
+
+            } catch (modifyErr) {
+                console.error(`   [Modify] Error modifying email ID=${msgId}: ${modifyErr.message}`);
+            }
+        } else {
+             // This case should ideally not be hit if UNREAD is always added to labelsToRemove
+            console.log(`   [状态] No specific rule actions for Email ID=${msgId}, ensuring it's marked as read.`);
+             await gmail.users.messages.modify({
+                userId: 'me',
+                id: msgId,
+                requestBody: {
+                    removeLabelIds: ['UNREAD'] // Default action: mark as read
+                }
             });
-            console.log(`   [备忘] 已在 Google Tasks 中创建待办。`);
-          } catch (tasksErr) {
-            console.warn(`   [备忘] Google Tasks 创建失败：${tasksErr.message}`);
-            // 如果不想用 Tasks，可改为写入数据库或调用其他第三方待办 API
-          }
+            console.log(`   [状态] 已标记为已读。`);
         }
-
-        // 7. 标记为已读，避免重复处理
-        await gmail.users.messages.modify({
-          userId: 'me',
-          id: msgId,
-          requestBody: {
-            removeLabelIds: ['UNREAD']
-          }
-        });
-        console.log(`   [状态] 已标记为已读。`);
       } catch (msgErr) {
         console.error(`   [错误] 处理邮件 ID=${msgId} 时出错：${msgErr.message}`);
         // 即使出现错误，也不要中断对后续邮件的处理
@@ -283,4 +377,72 @@ app.listen(PORT, () => {
   console.log(`✅ 应用已启动，监听端口 ${PORT}`);
   loadCredentials();
   authorize();
+});
+
+// Add the new endpoint for uploading credentials
+app.post('/upload-credentials', upload.single('credentialsFile'), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'No file uploaded.' });
+  }
+  // File is saved as credentials.json by multer
+  console.log('[Upload] credentials.json uploaded successfully.');
+  try {
+    // Re-initialize OAuth2 client with new credentials
+    if (oAuth2Client) {
+        oAuth2Client = null; // Reset the client
+    }
+    loadCredentials(); // Load the new credentials
+
+    // If a token already exists, it might be for the old credentials.
+    // It's safer to remove the old token and re-authorize.
+    if (fs.existsSync(TOKEN_PATH)) {
+        fs.unlinkSync(TOKEN_PATH);
+        console.log('[Upload] Removed existing token.json. Please re-authorize.');
+    }
+
+    authorize(); // Start authorization process (will generate new auth URL if no token)
+
+    res.json({ message: 'Credentials uploaded successfully. Please check console for authorization URL if needed.' });
+  } catch (error) {
+    console.error('[Upload] Error processing new credentials:', error);
+    res.status(500).json({ message: 'Error processing new credentials.' });
+  }
+});
+
+// Add a simple GET endpoint for the HTML page
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.get('/health', (req, res) => {
+  let gmailClientOk = false;
+  if (oAuth2Client && oAuth2Client.credentials && oAuth2Client.credentials.access_token) {
+    // Basic check: client exists and has an access token (doesn't verify token validity against Google)
+    gmailClientOk = true;
+  }
+
+  const healthStatus = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    checks: {
+      application: "running",
+      gmailClientInitialized: oAuth2Client !== null,
+      gmailClientAuthorized: gmailClientOk
+    }
+  };
+
+  if (gmailClientOk) {
+    res.status(200).json(healthStatus);
+  } else if (oAuth2Client === null) {
+    healthStatus.status = "error";
+    healthStatus.checks.application = "partially_running";
+    healthStatus.message = "Gmail client not loaded. Credentials might be missing.";
+    res.status(503).json(healthStatus);
+  }
+  else {
+     healthStatus.status = "error";
+    healthStatus.checks.application = "partially_running";
+    healthStatus.message = "Gmail client not authorized. Token might be missing or invalid. Please check logs or try re-authorizing.";
+    res.status(503).json(healthStatus);
+  }
 });
