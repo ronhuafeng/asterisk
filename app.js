@@ -14,95 +14,93 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const {google} = require('googleapis');
 
-// 如果需要同时调用 Google Tasks API，请在此一并加入 tasks 范围
-const SCOPES = [
-  'https://www.googleapis.com/auth/gmail.modify',
-  'https://www.googleapis.com/auth/tasks'
-];
+// const SCOPES = [
+//   'https://www.googleapis.com/auth/gmail.modify',
+//   'https://www.googleapis.com/auth/tasks'
+// ];
+// const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
+// const TOKEN_PATH = path.join(__dirname, 'token.json');
 
-const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
-const TOKEN_PATH = path.join(__dirname, 'token.json');
+// let oAuth2Client = null; // Will be handled by client-side React app
 
-let oAuth2Client = null;
+// ------------------ 1. 初始化 OAuth2 客户端 (REMOVED - Handled by client-side React app) ------------------
 
-// ------------------ 1. 初始化 OAuth2 客户端 ------------------
+// function loadCredentials() {
+//   try {
+//     const content = fs.readFileSync(CREDENTIALS_PATH, 'utf8');
+//     const credentials = JSON.parse(content);
+//     const {client_id, client_secret, redirect_uris} = credentials.installed || credentials.web;
 
-function loadCredentials() {
-  try {
-    const content = fs.readFileSync(CREDENTIALS_PATH, 'utf8');
-    const credentials = JSON.parse(content);
-    const {client_id, client_secret, redirect_uris} = credentials.installed || credentials.web;
-
-    oAuth2Client = new google.auth.OAuth2(
-      client_id,
-      client_secret,
-      redirect_uris[0]
-    );
-  } catch (err) {
-    console.error('读取 credentials.json 失败，请检查文件路径和格式。', err);
-    process.exit(1);
-  }
-}
+//     oAuth2Client = new google.auth.OAuth2(
+//       client_id,
+//       client_secret,
+//       redirect_uris[0]
+//     );
+//   } catch (err) {
+//     console.error('读取 credentials.json 失败，请检查文件路径和格式。', err);
+//     process.exit(1);
+//   }
+// }
 
 /**
- * 检查本地是否已有 token.json；
+ * 检查本地是否已有 token.json； (REMOVED - Handled by client-side React app)
  *   - 如果已有，直接加载并调用 startPolling();
  *   - 否则生成授权 URL，提示用户去访问。
  */
-function authorize() {
-  if (fs.existsSync(TOKEN_PATH)) {
-    // 已有 token.json，直接加载
-    const tokenContent = fs.readFileSync(TOKEN_PATH, 'utf8');
-    oAuth2Client.setCredentials(JSON.parse(tokenContent));
-    console.log('[OAuth] 已加载本地 token.json，OAuth2 客户端已授权。');
-    startPolling();
-  } else {
-    // 没有 token.json，生成授权 URL
-    const authUrl = oAuth2Client.generateAuthUrl({
-      access_type: 'offline',
-      scope: SCOPES,
-    });
-    console.log('请在浏览器中访问以下 URL 完成授权：');
-    console.log(authUrl);
-    console.log('\n授权后会跳转到： http://localhost:3000/oauth2callback?code=XXXX');
-  }
-}
+// function authorize() {
+//   if (fs.existsSync(TOKEN_PATH)) {
+//     // 已有 token.json，直接加载
+//     const tokenContent = fs.readFileSync(TOKEN_PATH, 'utf8');
+//     oAuth2Client.setCredentials(JSON.parse(tokenContent));
+//     console.log('[OAuth] 已加载本地 token.json，OAuth2 客户端已授权。');
+//     // startPolling(); // Polling mechanism will need to be re-evaluated
+//   } else {
+//     // 没有 token.json，生成授权 URL
+//     const authUrl = oAuth2Client.generateAuthUrl({
+//       access_type: 'offline',
+//       scope: SCOPES,
+//     });
+//     console.log('请在浏览器中访问以下 URL 完成授权：');
+//     console.log(authUrl);
+//     console.log('\n授权后会跳转到： http://localhost:3000/oauth2callback?code=XXXX');
+//   }
+// }
 
-// ------------------ 2. Express 处理 OAuth2 回调 ------------------
+// ------------------ 2. Express 处理 OAuth2 回调 (REMOVED - Handled by client-side React app) ------------------
 
 const app = express();
 app.use(bodyParser.urlencoded({extended: false}));
 app.use(bodyParser.json());
 
-app.get('/oauth2callback', async (req, res) => {
-  const code = req.query.code;
-  if (!code) {
-    res.status(400).send('缺少授权码 (code)。');
-    return;
-  }
-  try {
-    const {tokens} = await oAuth2Client.getToken(code);
-    oAuth2Client.setCredentials(tokens);
-    // 将 token 写入本地
-    fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
-    console.log('[OAuth] 授权成功，已将 token 保存至 token.json。');
-    res.send('授权成功！你可以关闭此页面。');
-    // 立即启动轮询
-    startPolling();
-  } catch (err) {
-    console.error('[OAuth] 通过 code 换取 token 时出错：', err.message);
-    res.status(500).send('授权失败，请查看服务器日志。');
-  }
-});
+// app.get('/oauth2callback', async (req, res) => {
+//   const code = req.query.code;
+//   if (!code) {
+//     res.status(400).send('缺少授权码 (code)。');
+//     return;
+//   }
+//   try {
+//     const {tokens} = await oAuth2Client.getToken(code);
+//     oAuth2Client.setCredentials(tokens);
+//     // 将 token 写入本地
+//     fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokens));
+//     console.log('[OAuth] 授权成功，已将 token 保存至 token.json。');
+//     res.send('授权成功！你可以关闭此页面。');
+//     // 立即启动轮询
+//     // startPolling(); // Polling mechanism will need to be re-evaluated
+//   } catch (err) {
+//     console.error('[OAuth] 通过 code 换取 token 时出错：', err.message);
+//     res.status(500).send('授权失败，请查看服务器日志。');
+//   }
+// });
 
-// ------------------ 3. 轮询处理函数 ------------------
+// ------------------ 3. 轮询处理函数 (NEEDS RE-EVALUATION without server-side oAuth2Client) ------------------
 
 /**
- * 返回 Gmail 客户端实例
+ * 返回 Gmail 客户端实例 (NEEDS RE-EVALUATION - oAuth2Client is now client-side)
  */
-function getGmailClient() {
-  return google.gmail({version: 'v1', auth: oAuth2Client});
-}
+// function getGmailClient() {
+//   return google.gmail({version: 'v1', auth: oAuth2Client});
+// }
 
 /**
  * 递归解析邮件纯文本正文（取第一个 text/plain 部分）
@@ -122,13 +120,13 @@ function extractPlainText(payload) {
 }
 
 /**
- * 轮询并处理未读邮件
+ * 轮询并处理未读邮件 (NEEDS RE-EVALUATION - oAuth2Client and getGmailClient are affected)
  */
-async function pollAndProcess() {
-  const gmail = getGmailClient();
+// async function pollAndProcess() {
+//   const gmail = getGmailClient(); // This will fail as getGmailClient is commented out / oAuth2Client is null
 
-  try {
-    // 1. 拉取未读邮件列表
+//   try {
+//     // 1. 拉取未读邮件列表
     const resList = await gmail.users.messages.list({
       userId: 'me',
       q: 'in:inbox is:unread',
@@ -264,23 +262,26 @@ async function pollAndProcess() {
 }
 
 /**
- * 启动轮询
+ * 启动轮询 (NEEDS RE-EVALUATION - pollAndProcess is affected)
  */
-function startPolling() {
-  const intervalMin = parseInt(process.env.POLLING_INTERVAL_MIN) || 1;
-  const intervalMs = intervalMin * 60 * 1000;
-  console.log(`[轮询] 每 ${intervalMin} 分钟检查一次未读邮件。`);
-  // 立即执行一次
-  pollAndProcess();
-  // 之后定期执行
-  setInterval(pollAndProcess, intervalMs);
-}
+// function startPolling() {
+//   const intervalMin = parseInt(process.env.POLLING_INTERVAL_MIN) || 1;
+//   const intervalMs = intervalMin * 60 * 1000;
+//   console.log(`[轮询] 每 ${intervalMin} 分钟检查一次未读邮件。`);
+//   // 立即执行一次
+//   // pollAndProcess(); // This will fail
+//   // 之后定期执行
+//   // setInterval(pollAndProcess, intervalMs); // This will fail
+// }
 
-// ------------------ 4. 启动服务器 & 授权 ------------------
+// ------------------ 4. 启动服务器 & 授权 (REMOVED - Auth handled by client-side) ------------------
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ 应用已启动，监听端口 ${PORT}`);
-  loadCredentials();
-  authorize();
+  // loadCredentials(); // Removed
+  // authorize(); // Removed
+  // startPolling(); // Polling mechanism needs re-evaluation
+  console.log('ℹ️ OAuth2 authentication is now handled by the client-side React application.');
+  console.log('ℹ️ The server-side polling mechanism (pollAndProcess, startPolling) is currently disabled and needs re-evaluation.');
 });
