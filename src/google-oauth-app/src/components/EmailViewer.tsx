@@ -6,9 +6,20 @@ interface EmailViewerProps {
   emails: ProcessedEmail[];
   isLoading: boolean; // Keep isLoading to potentially show item-specific loading later
   error?: string | null; // Keep error for potential item-specific errors
+  onMarkAsReadUnread: (emailId: string, currentStatus: boolean) => void;
+  onArchiveUnarchive: (emailId: string, currentStatus: boolean) => void;
+  onTrashUntrash: (emailId: string, currentStatus: boolean) => void;
+  modifyingEmailId?: string | null;
 }
 
-const EmailViewer: React.FC<EmailViewerProps> = ({ emails /*, isLoading, error */ }) => {
+const EmailViewer: React.FC<EmailViewerProps> = ({
+  emails,
+  onMarkAsReadUnread,
+  onArchiveUnarchive,
+  onTrashUntrash,
+  modifyingEmailId,
+  /*, isLoading, error */
+}) => {
   // MainDashboard now handles the primary loading/error/empty states for the whole list.
   // EmailViewer will just render the items it receives.
   // If emails array is empty, it will render nothing, which is fine as MainDashboard shows "No emails".
@@ -30,6 +41,27 @@ const EmailViewer: React.FC<EmailViewerProps> = ({ emails /*, isLoading, error *
           <p className="status">
             Status: {email.isUnread ? 'Unread' : 'Read'} | {email.isArchived ? 'Archived' : 'In Inbox'}
           </p>
+          <div className="email-actions">
+            <button
+              onClick={() => onMarkAsReadUnread(email.id, email.isUnread)}
+              disabled={modifyingEmailId === email.id}
+            >
+              {email.isUnread ? 'Mark as Read' : 'Mark as Unread'}
+            </button>
+            <button
+              onClick={() => onArchiveUnarchive(email.id, email.isArchived)}
+              disabled={modifyingEmailId === email.id}
+            >
+              {email.isArchived ? 'Move to Inbox' : 'Archive'}
+            </button>
+            <button
+              onClick={() => onTrashUntrash(email.id, email.isTrashed)}
+              disabled={modifyingEmailId === email.id}
+            >
+              {email.isTrashed ? 'Untrash & Move to Inbox' : 'Trash'}
+            </button>
+            {modifyingEmailId === email.id && <span className="action-loading">Processing...</span>}
+          </div>
           {/*
           <details>
             <summary>Body (Plain Text)</summary>

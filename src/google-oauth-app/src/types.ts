@@ -57,5 +57,6 @@ export interface ProcessedEmail {
   bodyHtml: string;
   isUnread: boolean;
   isArchived: boolean;
+  isTrashed: boolean;
   labelIds: string[];
 }

@@ -9,6 +9,7 @@ import {
   ProcessedEmail
 } from '../types'; // Import types from types.ts
 import EmailViewer from './EmailViewer';
+import { toast } from 'react-toastify';
 import './Dashboard.css'; // Import CSS
 
 const MainDashboard: React.FC = () => {
@@ -19,6 +20,7 @@ const MainDashboard: React.FC = () => {
   const [isLoadingList, setIsLoadingList] = useState<boolean>(false);
   const [isLoadingDetails, setIsLoadingDetails] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [modifyingEmailId, setModifyingEmailId] = useState<string | null>(null);
 
   // --- Helper Functions for Parsing ---
   const getHeader = (headers: MessagePartHeader[], name: string): string => {
@@ -169,6 +171,7 @@ const MainDashboard: React.FC = () => {
           bodyHtml: body.html,
           isUnread: fullMessage.labelIds.includes('UNREAD'),
           isArchived: !fullMessage.labelIds.includes('INBOX'),
+          isTrashed: fullMessage.labelIds.includes('TRASH'),
           labelIds: fullMessage.labelIds,
         });
       } catch (detailErr: any) {
@@ -182,6 +185,157 @@ const MainDashboard: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]); // getHeader, parseEmailBody are stable if defined outside or useCallback. Added accessToken
 
+  // --- Email Action API Calls ---
+  const modifyEmail = async (messageId: string, addLabelIds: string[], removeLabelIds: string[]) => {
+    if (!accessToken) {
+      throw new Error("Authentication token not available.");
+    }
+    setModifyingEmailId(messageId);
+    try {
+      const response = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ addLabelIds, removeLabelIds }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: "Unknown API error during modify" }));
+        console.error(`API Error modifying email ${messageId}:`, errorData);
+        throw new Error(`Failed to modify email: ${errorData?.error?.message || response.statusText}`);
+      }
+      const updatedMessage: FullGmailMessage = await response.json();
+       setError(null); // Clear any previous general error on successful modify
+      return updatedMessage;
+    } catch (err: any) {
+       // setError(`Failed to modify email ${messageId}. ${err.message}`); // This will be handled by toast in handlers
+      throw err; // Re-throw for the handler to catch
+    } finally {
+      // setModifyingEmailId(null); // Handler should do this after updating state
+    }
+  };
+
+  const handleMarkAsReadUnread = async (messageId: string, currentlyUnread: boolean) => {
+    const originalEmails = processedEmails;
+    setModifyingEmailId(messageId); // Set modifyingId early for UI feedback
+
+    // Optimistic update
+    setProcessedEmails(prevEmails =>
+      prevEmails.map(email =>
+        email.id === messageId ? { ...email, isUnread: !currentlyUnread } : email
+      )
+    );
+
+    try {
+      const addLabelIds = currentlyUnread ? [] : ['UNREAD'];
+      const removeLabelIds = currentlyUnread ? ['UNREAD'] : [];
+      const updatedMessage = await modifyEmail(messageId, addLabelIds, removeLabelIds);
+      // Update with server confirmed state (especially labelIds)
+      setProcessedEmails(prevEmails =>
+        prevEmails.map(email =>
+          email.id === messageId
+            ? { ...email, isUnread: !currentlyUnread, labelIds: updatedMessage.labelIds }
+            : email
+        )
+      );
+      toast.success(currentlyUnread ? "Email marked as unread." : "Email marked as read.");
+      setError(null); // Clear general error on success
+    } catch (err: any) {
+      console.error(`Error in handleMarkAsReadUnread for ${messageId}:`, err);
+      toast.error(`Failed to mark as read/unread: ${err.message || 'Unknown error'}`);
+      setProcessedEmails(originalEmails); // Revert on error
+      setError(`Failed to mark as read/unread: ${messageId}. Reverted.`); // Keep general error for reverted optimistic
+    } finally {
+      setModifyingEmailId(null);
+    }
+  };
+
+  const handleArchiveUnarchive = async (messageId: string, currentlyArchived: boolean) => {
+    const originalEmails = processedEmails;
+    setModifyingEmailId(messageId); // Set modifyingId early
+
+    // Optimistic update
+    setProcessedEmails(prevEmails =>
+      prevEmails.map(email =>
+        email.id === messageId ? { ...email, isArchived: !currentlyArchived } : email
+      )
+    );
+
+    try {
+      const addLabelIds = currentlyArchived ? ['INBOX'] : [];
+      const removeLabelIds = currentlyArchived ? [] : ['INBOX'];
+      const updatedMessage = await modifyEmail(messageId, addLabelIds, removeLabelIds);
+      // Update with server confirmed state
+      setProcessedEmails(prevEmails =>
+        prevEmails.map(email =>
+          email.id === messageId
+            ? { ...email, isArchived: !currentlyArchived, labelIds: updatedMessage.labelIds }
+            : email
+        )
+      );
+      toast.success(currentlyArchived ? "Email moved to Inbox." : "Email archived.");
+      setError(null);
+    } catch (err: any) {
+      console.error(`Error in handleArchiveUnarchive for ${messageId}:`, err);
+      toast.error(`Failed to archive/unarchive: ${err.message || 'Unknown error'}`);
+      setProcessedEmails(originalEmails); // Revert on error
+      setError(`Failed to archive/unarchive: ${messageId}. Reverted.`);
+    } finally {
+      setModifyingEmailId(null);
+    }
+  };
+
+  const handleTrashUntrash = async (messageId: string, currentlyTrashed: boolean) => {
+    // No optimistic update for trash for now due to filtering complexity on immediate UI change.
+    // State will update after successful API call.
+    setModifyingEmailId(messageId);
+    try {
+      let addLabelIds: string[];
+      let removeLabelIds: string[];
+
+      if (currentlyTrashed) { // Action: Untrash
+        addLabelIds = ['INBOX'];
+        removeLabelIds = ['TRASH'];
+      } else { // Action: Trash
+        addLabelIds = ['TRASH'];
+        // Find the email to check its current labels, to decide if INBOX needs to be removed
+        const emailToTrash = processedEmails.find(e => e.id === messageId);
+        if (emailToTrash && emailToTrash.labelIds.includes('INBOX')) {
+          removeLabelIds = ['INBOX']; // Remove from Inbox when trashing
+        } else {
+          removeLabelIds = []; // No need to remove INBOX if it's not there (e.g. already archived)
+        }
+      }
+      const updatedMessage = await modifyEmail(messageId, addLabelIds, removeLabelIds);
+
+      // Update state after successful API call
+      setProcessedEmails(prevEmails =>
+        prevEmails.map(email =>
+          email.id === messageId
+            ? {
+                ...email,
+                isTrashed: !currentlyTrashed,
+                // If untrashing, it's moved to inbox, so not archived.
+                // If trashing, retain previous archived status logic (it might be archived and then trashed).
+                isArchived: !currentlyTrashed ? false : email.isArchived,
+                labelIds: updatedMessage.labelIds,
+              }
+            : email
+        )
+      );
+      toast.success(currentlyTrashed ? "Email moved to Inbox from Trash." : "Email moved to Trash.");
+      setError(null);
+    } catch (err: any) {
+      console.error(`Error in handleTrashUntrash for ${messageId}:`, err);
+      toast.error(`Failed to move email regarding Trash: ${err.message || 'Unknown error'}`);
+      // setError is already called by modifyEmail if the API call itself failed.
+      // If modifyEmail didn't throw but some other logic here did, we might need an explicit setError.
+      // For now, assuming modifyEmail's throw is the primary error source.
+    } finally {
+      setModifyingEmailId(null);
+    }
+  };
 
   useEffect(() => {
     if (accessToken) {
@@ -250,10 +404,18 @@ const MainDashboard: React.FC = () => {
       {(isLoadingDetails && processedEmails.length > 0) && <p className="loading-message"><em>Loading more details...</em></p>}
 
 
-      <EmailViewer emails={processedEmails} isLoading={isLoading} error={null} />
+      <EmailViewer
+        emails={processedEmails.filter(email => !email.isTrashed)} // Filter out trashed emails from main view
+        isLoading={isLoading}
+        error={null}
+        onMarkAsReadUnread={handleMarkAsReadUnread}
+        onArchiveUnarchive={handleArchiveUnarchive}
+        onTrashUntrash={handleTrashUntrash}
+        modifyingEmailId={modifyingEmailId}
+      />
       {/* Error is handled above, EmailViewer doesn't need to re-display it unless it has its own errors */}
 
-      {!isLoading && !processedEmails.length && accessToken && !error && (
+      {!isLoading && !processedEmails.filter(email => !email.isTrashed).length && accessToken && !error && (
         <p className="status-message">No emails found matching the current criteria (Default: Archived). Try refreshing or checking Gmail.</p>
       )}
 
