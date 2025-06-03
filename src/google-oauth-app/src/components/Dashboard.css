@@ -1,0 +1,91 @@
+/* Dashboard.css */
+
+/* MainDashboard Styles */
+.dashboard-container {
+  padding: 20px;
+  font-family: Arial, sans-serif;
+}
+
+.dashboard-controls button {
+  margin: 5px;
+  padding: 8px 15px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  cursor: pointer;
+  background-color: #f0f0f0;
+}
+
+.dashboard-controls button:hover {
+  background-color: #e0e0e0;
+}
+
+.dashboard-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.error-message {
+  color: red;
+  font-weight: bold;
+  margin: 10px 0;
+}
+
+.loading-message {
+  font-style: italic;
+  margin: 10px 0;
+  color: #555;
+}
+
+.status-message {
+    margin: 10px 0;
+    color: #333;
+}
+
+/* EmailViewer Styles */
+.email-list-container {
+  list-style-type: none;
+  padding: 0;
+}
+
+.email-item {
+  border: 1px solid #ddd;
+  padding: 15px;
+  margin-bottom: 10px;
+  border-radius: 5px;
+  background-color: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.email-item.unread {
+  background-color: #f0f8ff; /* Light blue for unread */
+  font-weight: bold; /* Make text bold for unread */
+}
+
+.email-item .subject {
+  font-size: 1.1em;
+  margin-bottom: 5px;
+  color: #333;
+}
+.email-item.unread .subject {
+    font-weight: bold; /* Ensure subject is bold for unread */
+}
+
+
+.email-item .details {
+  font-size: 0.9em;
+  color: #555;
+  margin-bottom: 3px;
+}
+
+.email-item .snippet {
+  font-size: 0.95em;
+  color: #444;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+.email-item .status {
+    font-size: 0.8em;
+    color: #777;
+    margin-top: 8px;
+}

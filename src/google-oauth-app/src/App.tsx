@@ -1,77 +1,78 @@
-import React from 'react';
-import { GoogleOAuthProvider, GoogleLogin, CredentialResponse } from '@react-oauth/google';
+import React, { useEffect } from 'react';
+import { GoogleOAuthProvider, useGoogleLogin, TokenResponse } from '@react-oauth/google';
 import logo from './logo.svg';
 import './App.css';
-import { useAuth } from './AuthContext'; // Import useAuth
+import { useAuth } from './AuthContext';
+import MainDashboard from './components/MainDashboard'; // Import MainDashboard
 
 const AppContent: React.FC = () => {
-  const { login, logout, accessToken, userProfile } = useAuth(); // Use useAuth hook, add userProfile
+  const { login, logout, accessToken, userProfile, fetchUserProfile } = useAuth();
 
-  const handleLoginSuccess = (credentialResponse: CredentialResponse) => {
-    console.log('Login Success:', credentialResponse);
-    if (credentialResponse.credential) {
-      login(credentialResponse.credential); // Call login from AuthContext
-      // At this point, credentialResponse.credential is an ID token.
-      // For fetching user profile, you might need to decode it (if it contains profile info)
-      // or use it with Google's API if it were an access token.
-      // The @react-oauth/google library is primarily for authentication.
-      // To get user profile, you might need another call or ensure profile scopes were requested
-      // if using a flow that returns an access token for Google People API.
-      // For now, we are storing the ID token as 'accessToken'.
-    } else {
-      console.error("Login Success, but no credential received.");
+  const handleGoogleLoginSuccess = async (tokenResponse: Omit<TokenResponse, 'error' | 'error_description' | 'error_uri'>) => {
+    // The TokenResponse from useGoogleLogin already has 'access_token', 'expires_in', etc.
+    // We defined TokenAuthResponse in AuthContext to match this.
+    // The Omit is to satisfy the type if we directly pass from useGoogleLogin,
+    // but our login function expects our defined TokenAuthResponse which is compatible.
+    console.log('Google Login Success:', tokenResponse);
+    login(tokenResponse as TokenAuthResponse); // Cast is safe if structure matches
+    // User profile will be fetched after token is stored
+  };
+
+  const handleGoogleLoginError = () => {
+    console.error('Google Login Failed');
+  };
+
+  const googleLogin = useGoogleLogin({
+    onSuccess: handleGoogleLoginSuccess,
+    onError: handleGoogleLoginError,
+    scope: "email profile https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify",
+    flow: 'token', // Important: to get an access token directly
+  });
+
+  useEffect(() => {
+    if (accessToken && !userProfile) {
+      fetchUserProfile();
     }
-  };
-
-  const handleLoginError = () => {
-    console.log('Login Failed');
-  };
+  }, [accessToken, userProfile, fetchUserProfile]);
 
   const handleLogout = () => {
-    logout(); // Call logout from AuthContext
+    logout();
     console.log('User logged out');
   };
 
   return (
     <div className="App">
       <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.tsx</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-        <br />
         {!accessToken ? (
-          <GoogleLogin
-            onSuccess={handleLoginSuccess}
-            onError={handleLoginError}
-            scope="email profile https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify"
-            // useOneTap // Uncomment to enable One Tap sign-in
-          />
+          <>
+            <img src={logo} className="App-logo" alt="logo" />
+            <p>Please login to continue.</p>
+            <button onClick={() => googleLogin()} style={{ padding: '10px 20px', fontSize: '16px', cursor: 'pointer' }}>
+              Sign in with Google
+            </button>
+          </>
         ) : (
           <div>
-            <div>
-              <h3>Welcome, {userProfile?.name || userProfile?.given_name || 'User'}!</h3>
-              {userProfile?.picture && (
-                <img
-                  src={userProfile.picture}
-                  alt="Profile"
-                  style={{ borderRadius: '50%', width: '50px', height: '50px', marginBottom: '10px' }}
-                />
-              )}
-              {userProfile?.email && <p>Email: {userProfile.email}</p>}
-              {/* <p>Access Token (ID Token): {accessToken}</p> */}
-              <button onClick={handleLogout} style={{ marginTop: '10px', padding: '8px 15px', cursor: 'pointer' }}>
-                Logout
-              </button>
-            </div>
+            {userProfile ? (
+              <>
+                <h3>Welcome, {userProfile.name || userProfile.given_name || 'User'}!</h3>
+                {userProfile.picture && (
+                  <img
+                    src={userProfile.picture}
+                    alt="Profile"
+                    style={{ borderRadius: '50%', width: '50px', height: '50px', marginBottom: '10px' }}
+                  />
+                )}
+                {userProfile.email && <p>Email: {userProfile.email}</p>}
+              </>
+            ) : (
+              <p>Loading user profile...</p>
+            )}
+            <button onClick={handleLogout} style={{ marginTop: '10px', padding: '8px 15px', cursor: 'pointer' }}>
+              Logout
+            </button>
+            <hr style={{margin: '20px 0', width: '100%'}} />
+            <MainDashboard /> {/* Add MainDashboard here */}
           </div>
         )}
       </header>
