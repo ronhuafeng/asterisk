@@ -6,9 +6,11 @@ import {
   MessagePartHeader,
   MessagePart,
   FullGmailMessage,
-  ProcessedEmail
+  ProcessedEmail,
+  Rule // Import Rule
 } from '../types'; // Import types from types.ts
 import EmailViewer from './EmailViewer';
+import RuleManager from './RuleManager'; // Import RuleManager
 import { toast } from 'react-toastify';
 import './Dashboard.css'; // Import CSS
 
@@ -21,6 +23,9 @@ const MainDashboard: React.FC = () => {
   const [isLoadingDetails, setIsLoadingDetails] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [modifyingEmailId, setModifyingEmailId] = useState<string | null>(null);
+  const [userLabels, setUserLabels] = useState<any[]>([]); // For storing user's Gmail labels
+  const [activeRules, setActiveRules] = useState<Rule[]>([]);
+  const [aiConfig, setAiConfig] = useState({ endpoint: '', key: '' });
 
   // --- Helper Functions for Parsing ---
   const getHeader = (headers: MessagePartHeader[], name: string): string => {
@@ -136,13 +141,21 @@ const MainDashboard: React.FC = () => {
     }
     setIsLoadingDetails(true);
 
-    // If clearing existing, do it before starting new fetches
-    if (clearExistingDetails) {
-      setProcessedEmails([]);
-    }
+    let emailsToProcessInitial = clearExistingDetails ? [] : [...processedEmails];
 
-    const newProcessedEmails: ProcessedEmail[] = [];
+    // This array will hold newly fetched and processed emails from the current batch
+    const newlyFetchedAndProcessedEmailsBatch: ProcessedEmail[] = [];
+
     for (const messageInfo of messagesToFetch) {
+      // Skip if already processed in this session (useful for "Load More" where messagesToFetch might have overlaps if not handled by messageIdList)
+      // However, for rule application, we might want to re-process if rules changed.
+      // For now, simple skip if ID exists.
+      if (!clearExistingDetails && emailsToProcessInitial.find(e => e.id === messageInfo.id)) {
+          // console.log("Skipping already processed email during fetchAndProcessDetails:", messageInfo.id);
+          // continue; // This would skip rule re-application on "Load More" for existing items.
+          // Instead, let's ensure we only add new items, and rule application logic handles existing.
+      }
+
       try {
         const res = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${messageInfo.id}?format=full`, {
           headers: { 'Authorization': `Bearer ${accessToken}` },
@@ -160,7 +173,7 @@ const MainDashboard: React.FC = () => {
         const date = getHeader(headers, 'Date');
         const body = parseEmailBody(fullMessage.payload);
 
-        newProcessedEmails.push({ // Corrected variable name
+        let currentEmail: ProcessedEmail = {
           id: fullMessage.id,
           threadId: fullMessage.threadId,
           subject,
@@ -173,18 +186,122 @@ const MainDashboard: React.FC = () => {
           isArchived: !fullMessage.labelIds.includes('INBOX'),
           isTrashed: fullMessage.labelIds.includes('TRASH'),
           labelIds: fullMessage.labelIds,
-        });
+        };
+
+        // Apply rules automatically to newly fetched email
+        for (const rule of activeRules) {
+          if (checkRuleCondition(currentEmail, rule)) {
+            // console.log(`Auto-applying rule "${rule.name}" to new email "${currentEmail.subject}"`);
+            const updatedEmailAfterRule = await applyRuleAction(rule, currentEmail, false); // false for isManualRun
+            if (updatedEmailAfterRule) {
+              currentEmail = updatedEmailAfterRule;
+            }
+          }
+        }
+        newlyFetchedAndProcessedEmailsBatch.push(currentEmail);
+
       } catch (detailErr: any) {
         console.warn(`Error processing message ${messageInfo.id}:`, detailErr.message);
-        // Optionally add a placeholder or error object to newProcessedEmails for this ID
       }
     }
 
-    setProcessedEmails(prevDetails => clearExistingDetails ? newProcessedEmails : [...prevDetails, ...newProcessedEmails]);
+    // Update the main state once with all processed emails
+    if (clearExistingDetails) {
+        setProcessedEmails(newlyFetchedAndProcessedEmailsBatch);
+    } else {
+        // Add new emails, or update existing ones if they were re-fetched and processed by rules
+        setProcessedEmails(prevEmails => {
+            const emailIdsInNewBatch = new Set(newlyFetchedAndProcessedEmailsBatch.map(e => e.id));
+            const oldEmailsNotUpdated = prevEmails.filter(e => !emailIdsInNewBatch.has(e.id));
+            return [...oldEmailsNotUpdated, ...newlyFetchedAndProcessedEmailsBatch];
+        });
+    }
     setIsLoadingDetails(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken]); // getHeader, parseEmailBody are stable if defined outside or useCallback. Added accessToken
+  }, [accessToken, activeRules]); // checkRuleCondition, applyRuleAction were removed as direct deps, they use state/props
 
+  // --- AI Condition Evaluation ---
+  const evaluateAICondition = async (textToEvaluate: string, userPrompt: string, endpoint: string, apiKey: string): Promise<boolean> => {
+    if (!endpoint || !apiKey) {
+      toast.warn("AI condition: API endpoint or key is not configured.");
+      return false;
+    }
+    if (!textToEvaluate.trim()) {
+        // console.log("AI condition: Text to evaluate is empty, returning false.");
+        return false; // No text to evaluate
+    }
+     // Simple truncation if text is too long
+    const MAX_AI_TEXT_LENGTH = 4000; // Shorter than summarization, as prompts can be long
+    let processedText = textToEvaluate;
+    if (processedText.length > MAX_AI_TEXT_LENGTH) {
+        console.warn(`Text for AI condition length (${processedText.length}) exceeds ${MAX_AI_TEXT_LENGTH} chars, truncating.`);
+        processedText = processedText.substring(0, MAX_AI_TEXT_LENGTH) + "... (truncated)";
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: "gpt-3.5-turbo",
+          messages: [
+            { role: "system", content: "You are an AI assistant that evaluates a condition based on provided text and a prompt. Respond with only 'yes' or 'no'." },
+            { role: "user", content: `Based on the following text, does it satisfy this condition: "${userPrompt}"? Text: "${processedText}" Respond with only 'yes' or 'no'.` }
+          ],
+          max_tokens: 5
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: "Unknown API error during AI condition evaluation" }));
+        console.error("AI Condition API Error:", errorData);
+        toast.error(`AI Condition API error: ${errorData?.error?.message || response.statusText}`);
+        return false;
+      }
+
+      const data = await response.json();
+      const decision = data.choices?.[0]?.message?.content?.trim().toLowerCase();
+      return decision === "yes";
+
+    } catch (err: any) {
+      console.error("evaluateAICondition error:", err);
+      toast.error(`AI Condition evaluation failed: ${err.message}`);
+      return false;
+    }
+  };
+
+  // --- Rule Engine Core ---
+  const checkRuleCondition = async (email: ProcessedEmail, rule: Rule): Promise<boolean> => {
+    switch (rule.conditionType) {
+      case 'sender':
+        return email.sender.toLowerCase().includes(rule.conditionValue.toLowerCase());
+      case 'bodyKeywords':
+        const keywords = rule.conditionValue.split(',').map(kw => kw.trim().toLowerCase()).filter(kw => kw !== '');
+        if (keywords.length === 0) return false;
+        const emailContentForKeywords = (email.bodyPlain || email.snippet).toLowerCase();
+        return keywords.every(kw => emailContentForKeywords.includes(kw));
+      case 'aiPrompt':
+        if (!aiConfig.endpoint || !aiConfig.key) {
+          toast.warn(`AI Prompt rule "${rule.name}" skipped: AI not configured.`);
+          return false;
+        }
+        let textToEvaluate = '';
+        const target = rule.aiPromptTarget || 'body'; // Default to body if not specified
+        if (target === 'body') {
+          textToEvaluate = email.bodyPlain || email.snippet;
+        } else if (target === 'sender') {
+          textToEvaluate = email.sender;
+        } else if (target === 'subject') {
+          textToEvaluate = email.subject;
+        }
+        return await evaluateAICondition(textToEvaluate, rule.conditionValue, aiConfig.endpoint, aiConfig.key);
+      default:
+        return false;
+    }
+  };
   // --- Email Action API Calls ---
   const modifyEmail = async (messageId: string, addLabelIds: string[], removeLabelIds: string[]) => {
     if (!accessToken) {
@@ -339,13 +456,14 @@ const MainDashboard: React.FC = () => {
 
   useEffect(() => {
     if (accessToken) {
-      // Initial fetch of message IDs when accessToken becomes available
-      // The fetchMessageIds function will then call fetchAndProcessDetails
-      setMessageIdList([]); // Clear any old IDs
-      setProcessedEmails([]); // Clear any old processed emails
-      setNextPageToken(undefined); // Reset pagination
-      setError(null); // Clear previous errors
+      // Initial fetch of message IDs, labels, and rules
+      setMessageIdList([]);
+      setProcessedEmails([]);
+      setNextPageToken(undefined);
+      setError(null);
       fetchMessageIds();
+      fetchUserLabels();
+      loadRulesFromStorage();
     } else {
       // Clear all data if accessToken is lost (logout)
       setMessageIdList([]);
@@ -354,18 +472,355 @@ const MainDashboard: React.FC = () => {
       setError(null);
       setIsLoadingList(false);
       setIsLoadingDetails(false);
+      setUserLabels([]);
+      setActiveRules([]);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken, fetchMessageIds]); // Added fetchMessageIds as a dependency
+  }, [accessToken, fetchMessageIds, fetchUserLabels]); // loadRulesFromStorage is stable
+
+  // Load AI Config from localStorage on mount
+  useEffect(() => {
+    const storedEndpoint = localStorage.getItem('aiApiEndpoint') || '';
+    const storedKey = localStorage.getItem('aiApiKey') || '';
+    setAiConfig({ endpoint: storedEndpoint, key: storedKey });
+    // Listen for storage changes from other tabs/windows (optional)
+    const handleStorageChange = (event: StorageEvent) => {
+      if (event.key === 'aiApiEndpoint') {
+        setAiConfig(prev => ({ ...prev, endpoint: event.newValue || '' }));
+      }
+      if (event.key === 'aiApiKey') {
+        setAiConfig(prev => ({ ...prev, key: event.newValue || '' }));
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  // --- AI Summarization Service ---
+  const summarizeEmailText = async (emailBody: string, endpoint: string, apiKey: string): Promise<string> => {
+    if (!endpoint || !apiKey) {
+      throw new Error("AI API endpoint or key is not configured.");
+    }
+    // Basic check for very short content
+    if (!emailBody.trim() || emailBody.trim().length < 50) { // Arbitrary minimum length
+        return "Content too short to summarize meaningfully.";
+    }
+
+    // Simple truncation if body is too long (very basic, API might have its own limits)
+    const MAX_BODY_LENGTH = 15000; // Adjust based on typical API limits (e.g. 4k-16k tokens for context window)
+    let processedBody = emailBody;
+    if (processedBody.length > MAX_BODY_LENGTH) {
+        console.warn(`Email body length (${processedBody.length}) exceeds ${MAX_BODY_LENGTH} chars, truncating for summarization.`);
+        processedBody = processedBody.substring(0, MAX_BODY_LENGTH) + "... (truncated)";
+    }
+
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: "gpt-3.5-turbo", // This might need to be configurable or a default
+          messages: [
+            { role: "system", content: "You are a helpful assistant that summarizes emails concisely in one or two sentences." },
+            { role: "user", content: `Summarize the following email content:
+
+${processedBody}` }
+          ],
+          max_tokens: 100, // Keep summaries brief
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: "Unknown API error during summarization" }));
+        console.error("AI Summarization API Error:", errorData);
+        throw new Error(`API error: ${errorData?.error?.message || response.statusText}`);
+      }
+
+      const data = await response.json();
+      const summary = data.choices?.[0]?.message?.content?.trim();
+
+      if (!summary) {
+        console.error("AI Summarization: No summary content in response", data);
+        throw new Error("No summary content received from API.");
+      }
+      return summary;
+
+    } catch (err: any) {
+      console.error("summarizeEmailText error:", err);
+      // Rethrow with a more user-friendly message if possible, or let caller handle generic toast
+      throw new Error(`Summarization failed: ${err.message}`);
+    }
+  };
+
+
+  // --- Rule Engine Core ---
+  const checkRuleCondition = (email: ProcessedEmail, rule: Rule): boolean => {
+    switch (rule.conditionType) {
+      case 'sender':
+        return email.sender.toLowerCase().includes(rule.conditionValue.toLowerCase());
+      case 'bodyKeywords':
+        const keywords = rule.conditionValue.split(',').map(kw => kw.trim().toLowerCase()).filter(kw => kw !== '');
+        if (keywords.length === 0) return false;
+        const emailContent = (email.bodyPlain || email.snippet).toLowerCase();
+        return keywords.every(kw => emailContent.includes(kw));
+      case 'aiPrompt':
+        return false; // AI rules not implemented yet
+      default:
+        return false;
+    }
+  };
+
+  // isManualRun parameter to control toast messages for background vs manual application
+  const applyRuleAction = async (rule: Rule, email: ProcessedEmail, isManualRun: boolean = false): Promise<ProcessedEmail | null> => {
+    const originalModifyingEmailId = modifyingEmailId;
+    // For rule actions, we generally don't want to set modifyingEmailId as it's not a direct UI interaction on one item
+    // unless it's a manual run from RuleManager for a specific email (not implemented yet)
+    // For automatic application, it should remain null or be restored.
+    if (!isManualRun) {
+      // When rules are applied automatically (e.g., on email fetch),
+      // we don't want individual email items to show "Processing..." via modifyingEmailId.
+      // So, if modifyingEmailId is currently set (e.g., by a user clicking a button),
+      // we leave it, otherwise ensure it's null for background processing.
+      // This needs careful thought: if a user clicks "mark read" (sets modifyingEmailId) and a rule also
+      // wants to mark read, we don't want the rule's background processing to clear the user-facing modifyingEmailId.
+      // The individual action functions (applyMarkReadAction etc.) call modifyEmail, which *does* set modifyingEmailId.
+      // This is a tricky interaction.
+      // For now, let's assume rule actions are "background" and should not interfere with modifyingEmailId
+      // that might be set by a direct user interaction happening concurrently.
+      // The individual action functions will still flash it, which is acceptable for now.
+    }
+
+    let result: ProcessedEmail | null = null;
+    const toastPrefix = isManualRun ? "Manual Apply:" : "Rule:";
+
+    try {
+      switch (rule.actionType) {
+        case 'markRead':
+          result = await applyMarkReadAction(email, toastPrefix);
+          break;
+        case 'archive':
+          result = await applyArchiveAction(email, toastPrefix);
+          break;
+        case 'addLabel':
+          if (rule.actionValue) {
+            result = await applyAddLabelAction(email, rule.actionValue, toastPrefix);
+          } else {
+            toast.error(`${toastPrefix} No label value provided for 'addLabel' action on rule "${rule.name}".`);
+            result = email;
+          }
+          break;
+        case 'summarize':
+          if (!aiConfig.endpoint || !aiConfig.key) {
+            toast.warn(`${toastPrefix} AI Summarization is not configured for rule "${rule.name}". Please set API details.`);
+            result = email;
+          } else {
+            try {
+              const summaryText = await summarizeEmailText(email.bodyPlain || email.snippet, aiConfig.endpoint, aiConfig.key);
+              result = { ...email, summary: summaryText };
+              // Update processedEmails state with the new summary
+              setProcessedEmails(prev => prev.map(e => e.id === email.id ? { ...e, summary: summaryText } : e));
+              toast.success(`${toastPrefix} Email "${email.subject}" summarized.`);
+            } catch (summarizeErr: any) {
+              toast.error(`${toastPrefix} Failed to summarize email "${email.subject}": ${summarizeErr.message}`);
+              result = email; // Return original email on summarization error
+            }
+          }
+          break;
+        default:
+          result = email;
+      }
+    } catch(error) {
+        // Individual actions handle their own specific error toasts.
+        // This catch is a fallback.
+        toast.error(`${toastPrefix} Error applying rule "${rule.name}" to "${email.subject}".`);
+        result = null; // Ensure result is null on error
+    }
+    // No change to modifyingEmailId here, let individual handlers like handleMarkAsReadUnread clear it.
+    // Rule-based actions like applyMarkReadAction will also call modifyEmail which sets/clears it.
+    // This is acceptable for now.
+    return result;
+  };
+
+  // --- Label Management & Rule Loading ---
+  const loadRulesFromStorage = useCallback(() => {
+    const storedRules = localStorage.getItem('emailRules');
+    if (storedRules) {
+      try {
+        const parsedRules: Rule[] = JSON.parse(storedRules);
+        setActiveRules(parsedRules);
+        // console.log("Rules loaded from storage:", parsedRules);
+      } catch (e) {
+        console.error("Failed to parse rules from localStorage", e);
+        toast.error("Failed to load rules from storage. Rules may be corrupted.");
+        setActiveRules([]);
+      }
+    } else {
+      // console.log("No rules found in storage.");
+      setActiveRules([]); // No rules stored
+    }
+  }, []); // Stable function, no dependencies needed
+
+  // --- Label Management Functions ---
+  const fetchUserLabels = useCallback(async () => {
+    if (!accessToken) return;
+    try {
+      const response = await fetch(`https://www.googleapis.com/gmail/v1/users/me/labels`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: "Unknown error fetching labels" }));
+        throw new Error(`Failed to fetch labels: ${errorData?.error?.message || response.statusText}`);
+      }
+      const data = await response.json();
+      setUserLabels(data.labels || []);
+      return data.labels || [];
+    } catch (err: any) {
+      console.error("Error fetching user labels:", err);
+      toast.error(`Failed to fetch Gmail labels: ${err.message}`);
+      return [];
+    }
+  }, [accessToken]);
+
+  const createGmailLabel = async (labelName: string) => {
+    if (!accessToken) throw new Error("Not authenticated");
+    try {
+      const response = await fetch(`https://www.googleapis.com/gmail/v1/users/me/labels`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: labelName,
+          labelListVisibility: 'labelShow',
+          messageListVisibility: 'messageShow',
+        }),
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ message: "Unknown error creating label" }));
+        throw new Error(`Failed to create label: ${errorData?.error?.message || response.statusText}`);
+      }
+      const newLabel = await response.json();
+      toast.success(`Label "${labelName}" created successfully.`);
+      // Update userLabels state
+      setUserLabels(prevLabels => [...prevLabels, newLabel]);
+      return newLabel;
+    } catch (err: any) {
+      console.error(`Error creating label "${labelName}":`, err);
+      toast.error(`Failed to create label "${labelName}": ${err.message}`);
+      throw err;
+    }
+  };
+
+  // Fetch labels when accessToken is available
+  useEffect(() => {
+    if (accessToken) {
+      fetchUserLabels();
+    }
+  }, [accessToken, fetchUserLabels]);
+
+  // --- Rule Action Implementations ---
+  // Note: `modifyingEmailId` is handled by direct user actions like `handleMarkAsReadUnread`.
+  // Rule actions use `applyRuleAction` which manages `modifyingEmailId` differently.
+  // Adding toastPrefix to allow differentiation in toasts if needed by caller.
+  const applyMarkReadAction = async (email: ProcessedEmail, toastPrefix: string = "Rule:"): Promise<ProcessedEmail | null> => {
+    if (!email.isUnread) return email;
+    try {
+      // modifyEmail will set modifyingEmailId, which might be an undesired side-effect for purely background rule processing.
+      // This is managed by applyRuleAction wrapper for now.
+      const updatedGmailMessage = await modifyEmail(email.id, [], ['UNREAD']);
+      const updatedEmail = {
+        ...email,
+        isUnread: false,
+        labelIds: updatedGmailMessage.labelIds,
+      };
+      setProcessedEmails(prev => prev.map(e => e.id === email.id ? updatedEmail : e));
+      toast.success(`${toastPrefix} Email "${email.subject}" marked as read.`);
+      return updatedEmail;
+    } catch (err: any) {
+      toast.error(`${toastPrefix} Error marking "${email.subject}" as read: ${err.message}`);
+      return null;
+    }
+  };
+
+  const applyArchiveAction = async (email: ProcessedEmail, toastPrefix: string = "Rule:"): Promise<ProcessedEmail | null> => {
+    if (email.isArchived) return email;
+    try {
+      const updatedGmailMessage = await modifyEmail(email.id, [], ['INBOX']);
+      const updatedEmail = {
+        ...email,
+        isArchived: true,
+        labelIds: updatedGmailMessage.labelIds,
+      };
+      setProcessedEmails(prev => prev.map(e => e.id === email.id ? updatedEmail : e));
+      toast.success(`${toastPrefix} Email "${email.subject}" archived.`);
+      return updatedEmail;
+    } catch (err: any) {
+      toast.error(`${toastPrefix} Error archiving "${email.subject}": ${err.message}`);
+      return null;
+    }
+  };
+
+  const applyAddLabelAction = async (email: ProcessedEmail, labelName: string, toastPrefix: string = "Rule:"): Promise<ProcessedEmail | null> => {
+    if (!labelName || !labelName.trim()) {
+      toast.error(`${toastPrefix} Label name is empty for addLabel action on "${email.subject}".`);
+      return null;
+    }
+
+    let targetLabel = userLabels.find(l => l.name.toLowerCase() === labelName.toLowerCase());
+
+    try {
+      if (!targetLabel) {
+        // Attempt to refetch labels just in case it was created in another session/tab and userLabels state isn't updated yet.
+        // This is a common scenario if RuleManager creates a label and immediately a rule uses it.
+        const currentGmailLabels = await fetchUserLabels(); // Ensure userLabels is fresh
+        targetLabel = currentGmailLabels.find((l: any) => l.name.toLowerCase() === labelName.toLowerCase());
+        if (!targetLabel) {
+          targetLabel = await createGmailLabel(labelName); // This will toast success/error for creation
+          if (!targetLabel) return null;
+        }
+      }
+
+      if (email.labelIds.includes(targetLabel.id)) return email;
+
+      const updatedGmailMessage = await modifyEmail(email.id, [targetLabel.id], []);
+      const updatedEmail = {
+        ...email,
+        labelIds: updatedGmailMessage.labelIds,
+      };
+      setProcessedEmails(prev => prev.map(e => e.id === email.id ? updatedEmail : e));
+      toast.success(`${toastPrefix} Label "${labelName}" added to email "${email.subject}".`);
+      return updatedEmail;
+    } catch (err: any) {
+      // createGmailLabel and modifyEmail handle their own toasts for API errors.
+      // This catch is for other unexpected errors during the process.
+      toast.error(`${toastPrefix} Failed to add label "${labelName}" to email "${email.subject}": ${err.message}`);
+      return null;
+    }
+  };
+
+  const handleRefreshRulesAndEmails = () => {
+    loadRulesFromStorage(); // Reload rules from storage
+    toast.info("Rules reloaded from local storage.");
+    // Optionally, re-fetch emails to apply new/updated rules immediately
+    // For now, rules apply to newly fetched emails or via "Apply All Rules" button.
+    // To re-apply to existing loaded emails, user can click "Apply All Rules" in RuleManager
+    // or we could trigger a re-process here.
+    // Let's just refresh the list for now, which will re-apply to fetched emails.
+    handleRefreshEmails();
+  }
 
   const handleRefreshEmails = () => {
     // Clear all states and fetch first page of IDs, which then fetches their details
     setMessageIdList([]);
-    setProcessedEmails([]);
+    setProcessedEmails([]); // Also clear processed emails before fetching new ones
     setNextPageToken(undefined);
     setError(null);
     if (accessToken) {
-        fetchMessageIds();
+        fetchMessageIds(); // This will trigger fetchAndProcessDetails which applies rules
     }
   };
 
@@ -403,6 +858,13 @@ const MainDashboard: React.FC = () => {
       {(isLoadingDetails && !processedEmails.length) && <p className="loading-message"><em>Loading full email details... (Phase 2)</em></p>}
       {(isLoadingDetails && processedEmails.length > 0) && <p className="loading-message"><em>Loading more details...</em></p>}
 
+      <RuleManager
+        processedEmailsFromDashboard={processedEmails}
+        currentActiveRules={activeRules}
+        onApplyRuleAction={applyRuleAction}
+        checkRuleCondition={checkRuleCondition}
+        onRulesUpdated={loadRulesFromStorage} // Renamed from handleRefreshRulesAndEmails for clarity
+      />
 
       <EmailViewer
         emails={processedEmails.filter(email => !email.isTrashed)} // Filter out trashed emails from main view

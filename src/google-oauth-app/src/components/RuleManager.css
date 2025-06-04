@@ -1,0 +1,98 @@
+.rule-manager {
+  padding: 10px; /* Reduced padding */
+  border: 1px solid #ccc;
+  margin-top: 20px;
+  background-color: #f0f0f0; /* Slightly different background for the whole manager */
+  border-radius: 8px;
+}
+
+.section-container {
+  background-color: #fff;
+  padding: 15px;
+  margin-bottom: 15px;
+  border-radius: 5px; /* Rounded corners for sections */
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05); /* Subtle shadow for sections */
+}
+
+.rule-manager h3 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eee;
+}
+.rule-manager h4 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  color: #333;
+}
+
+.ai-config-form div, .rule-form div { /* For input rows */
+  margin-bottom: 10px;
+  display: flex; /* Align label and input */
+  align-items: center; /* Vertically align items in the row */
+}
+.ai-config-form label, .rule-form label {
+  display: inline-block;
+  min-width: 130px; /* Ensure labels have enough space */
+  margin-right: 10px;
+  font-weight: 500; /* Slightly bolder labels */
+  font-size: 0.95em;
+}
+
+.ai-config-form input[type="text"],
+.ai-config-form input[type="password"],
+.rule-form input[type="text"],
+.rule-form select {
+  flex-grow: 1; /* Allow input to take available space */
+  margin-right: 10px; /* Spacing between elements */
+  /* margin-bottom: 10px; No longer needed as parent div handles bottom margin */
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+/* Specific width for AI config inputs if needed, or let flexbox handle it */
+.ai-config-form input[type="text"],
+.ai-config-form input[type="password"] {
+   /* width: calc(100% - 140px); /* Example if flex-grow is not enough */
+   max-width: 450px;
+}
+
+
+.rule-form button {
+  padding: 8px 15px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.rule-form button:hover {
+  background-color: #0056b3;
+}
+.rule-list ul {
+  list-style-type: none;
+  padding: 0;
+}
+.rule-list li {
+  background-color: #fff;
+  border: 1px solid #eee;
+  padding: 10px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.delete-rule-btn {
+  padding: 5px 10px;
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.delete-rule-btn:hover {
+  background-color: #c82333;
+}

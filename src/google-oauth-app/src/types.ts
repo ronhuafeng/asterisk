@@ -59,4 +59,25 @@ export interface ProcessedEmail {
   isArchived: boolean;
   isTrashed: boolean;
   labelIds: string[];
+  summary?: string;
+}
+
+// --- Interface for Email Processing Rules ---
+export interface Rule {
+  id: string; // Unique ID for the rule
+  name: string; // User-defined name for the rule
+  conditionType: 'sender' | 'bodyKeywords' | 'aiPrompt';
+  conditionValue: string; // e.g., sender's email, comma-separated keywords, AI prompt text
+  actionType: 'summarize' | 'archive' | 'markRead' | 'addLabel';
+  actionValue?: string; // e.g., label name for 'addLabel', not needed for others like archive
+  aiPromptTarget?: 'sender' | 'body' | 'subject'; // Optional: specifies what part of email AI prompt applies to
+}
+
+// --- Props for RuleManager ---
+export interface RuleManagerProps {
+  processedEmailsFromDashboard: ProcessedEmail[];
+  currentActiveRules: Rule[]; // Rules loaded by MainDashboard
+  onApplyRuleAction: (rule: Rule, email: ProcessedEmail, isManualRun: boolean) => Promise<ProcessedEmail | null>;
+  checkRuleCondition: (email: ProcessedEmail, rule: Rule) => Promise<boolean>; // Now returns a Promise<boolean>
+  onRulesUpdated: () => void; // Callback to MainDashboard to reload rules
 }
