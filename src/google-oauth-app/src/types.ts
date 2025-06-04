@@ -81,3 +81,19 @@ export interface RuleManagerProps {
   checkRuleCondition: (email: ProcessedEmail, rule: Rule) => Promise<boolean>; // Now returns a Promise<boolean>
   onRulesUpdated: () => void; // Callback to MainDashboard to reload rules
 }
+
+// Assuming the Genkit flow for summarization has this signature
+// when called from the frontend.
+// The actual way to import or access this flow will need to be
+// implemented where it's called (e.g., in MainDashboard.tsx).
+export interface GenkitSummarizeEmailFlow {
+  (emailContent: string): Promise<{ summary: string }>;
+}
+
+// Also, let's define a type for the summary state we'll manage.
+export interface OnDemandSummaryState {
+  emailId: string;
+  summaryText: string | null;
+  isLoading: boolean;
+  error?: string | null;
+}

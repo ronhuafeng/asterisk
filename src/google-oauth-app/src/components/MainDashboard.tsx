@@ -7,7 +7,9 @@ import {
   MessagePart,
   FullGmailMessage,
   ProcessedEmail,
-  Rule // Import Rule
+  Rule, // Import Rule
+  OnDemandSummaryState, // Import OnDemandSummaryState
+  GenkitSummarizeEmailFlow // Import GenkitSummarizeEmailFlow
 } from '../types'; // Import types from types.ts
 import EmailViewer from './EmailViewer';
 import RuleManager from './RuleManager'; // Import RuleManager
@@ -26,6 +28,7 @@ const MainDashboard: React.FC = () => {
   const [userLabels, setUserLabels] = useState<any[]>([]); // For storing user's Gmail labels
   const [activeRules, setActiveRules] = useState<Rule[]>([]);
   const [aiConfig, setAiConfig] = useState({ endpoint: '', key: '' });
+  const [currentOnDemandSummary, setCurrentOnDemandSummary] = useState<OnDemandSummaryState | null>(null);
 
   // --- Helper Functions for Parsing ---
   const getHeader = (headers: MessagePartHeader[], name: string): string => {
@@ -218,7 +221,75 @@ const MainDashboard: React.FC = () => {
     }
     setIsLoadingDetails(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken, activeRules]); // checkRuleCondition, applyRuleAction were removed as direct deps, they use state/props
+  }, [accessToken, activeRules, aiConfig]); // Updated dependencies for fetchAndProcessDetails
+
+  // --- Placeholder for Genkit Flow Access ---
+  // TODO: Implement this function to return the actual Genkit summarizeEmail flow
+  // This might involve importing it from a specific file if it's part of the frontend bundle,
+  // or accessing a globally available function if Genkit is loaded differently.
+  const getSummarizeEmailFlow = (): GenkitSummarizeEmailFlow => {
+    // Placeholder implementation - THIS NEEDS TO BE REPLACED
+    console.warn("Placeholder: getSummarizeEmailFlow() is not implemented. Using mock summarizer.");
+    return async (emailContent: string): Promise<{ summary: string }> => {
+      return new Promise(resolve => {
+        setTimeout(() => {
+          resolve({ summary: `Mock summary for content starting with: ${emailContent.substring(0, 50)}...` });
+        }, 1500); // Simulate network delay
+      });
+    };
+  };
+
+  // --- On-Demand Summarization Handler ---
+  const handleOnDemandSummarize = useCallback(async (email: ProcessedEmail) => {
+    setCurrentOnDemandSummary({
+      emailId: email.id,
+      summaryText: null,
+      isLoading: true,
+      error: null,
+    });
+    toast.info(`Summarizing email: "${email.subject || 'No Subject'}"...`);
+
+    try {
+      const emailContentToSummarize = email.bodyPlain || email.snippet;
+      if (!emailContentToSummarize) {
+        throw new Error("No content available to summarize.");
+      }
+
+      // Option 1: Use Genkit Flow (if available and configured)
+      // const summarizeEmailFlow = getSummarizeEmailFlow();
+      // const result = await summarizeEmailFlow(emailContentToSummarize);
+      // const summary = result.summary;
+
+      // Option 2: Use existing summarizeEmailText (direct OpenAI-compatible API call)
+      // This requires aiConfig to be set via RuleManager UI
+      if (!aiConfig.endpoint || !aiConfig.key) {
+        throw new Error("AI API endpoint or key not configured for on-demand summarization.");
+      }
+      const summary = await summarizeEmailText(emailContentToSummarize, aiConfig.endpoint, aiConfig.key);
+
+
+      setCurrentOnDemandSummary({
+        emailId: email.id,
+        summaryText: summary,
+        isLoading: false,
+        error: null,
+      });
+      // Also update the main processedEmails state so the summary persists if the user navigates or rule applies it later
+      setProcessedEmails(prev => prev.map(e => e.id === email.id ? { ...e, summary: summary } : e));
+      toast.success(`Summary ready for: "${email.subject || 'No Subject'}"`);
+
+    } catch (err: any) {
+      console.error("On-demand summarization error:", err);
+      const errorMessage = err.message || "Failed to summarize email.";
+      setCurrentOnDemandSummary({
+        emailId: email.id,
+        summaryText: null,
+        isLoading: false,
+        error: errorMessage,
+      });
+      toast.error(`Error summarizing: ${errorMessage}`);
+    }
+  }, [aiConfig.endpoint, aiConfig.key]); // Dependency on aiConfig parts used
 
   // --- AI Condition Evaluation ---
   const evaluateAICondition = async (textToEvaluate: string, userPrompt: string, endpoint: string, apiKey: string): Promise<boolean> => {
@@ -874,6 +945,8 @@ ${processedBody}` }
         onArchiveUnarchive={handleArchiveUnarchive}
         onTrashUntrash={handleTrashUntrash}
         modifyingEmailId={modifyingEmailId}
+        onDemandSummarize={handleOnDemandSummarize}
+        currentSummary={currentOnDemandSummary}
       />
       {/* Error is handled above, EmailViewer doesn't need to re-display it unless it has its own errors */}
 

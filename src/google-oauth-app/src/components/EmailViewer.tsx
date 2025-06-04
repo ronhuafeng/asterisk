@@ -1,5 +1,5 @@
 import React from 'react';
-import { ProcessedEmail } from '../types';
+import { ProcessedEmail, OnDemandSummaryState } from '../types'; // Import OnDemandSummaryState
 import './Dashboard.css'; // Import CSS
 
 interface EmailViewerProps {
@@ -10,6 +10,8 @@ interface EmailViewerProps {
   onArchiveUnarchive: (emailId: string, currentStatus: boolean) => void;
   onTrashUntrash: (emailId: string, currentStatus: boolean) => void;
   modifyingEmailId?: string | null;
+  onDemandSummarize: (email: ProcessedEmail) => void;
+  currentSummary: OnDemandSummaryState | null;
 }
 
 const EmailViewer: React.FC<EmailViewerProps> = ({
@@ -18,6 +20,8 @@ const EmailViewer: React.FC<EmailViewerProps> = ({
   onArchiveUnarchive,
   onTrashUntrash,
   modifyingEmailId,
+  onDemandSummarize,
+  currentSummary,
   /*, isLoading, error */
 }) => {
   // MainDashboard now handles the primary loading/error/empty states for the whole list.
@@ -60,8 +64,38 @@ const EmailViewer: React.FC<EmailViewerProps> = ({
             >
               {email.isTrashed ? 'Untrash & Move to Inbox' : 'Trash'}
             </button>
+            <button
+              onClick={() => onDemandSummarize(email)}
+              disabled={modifyingEmailId === email.id || (currentSummary?.isLoading && currentSummary?.emailId === email.id)}
+              className="summarize-btn"
+            >
+              {currentSummary?.isLoading && currentSummary?.emailId === email.id ? 'Summarizing...' : 'Summarize'}
+            </button>
             {modifyingEmailId === email.id && <span className="action-loading">Processing...</span>}
           </div>
+
+          {/* On-demand Summary Display */}
+          {props.currentSummary && props.currentSummary.emailId === email.id && !props.currentSummary.isLoading && (
+            <div className="on-demand-summary-section">
+              {props.currentSummary.summaryText && (
+                <>
+                  <h4>Summary:</h4>
+                  <p className="summary-text">{props.currentSummary.summaryText}</p>
+                </>
+              )}
+              {props.currentSummary.error && (
+                <p className="summary-error">Error: {props.currentSummary.error}</p>
+              )}
+            </div>
+          )}
+          {/* Display persisted summary if no on-demand action is active for this email but a summary exists */}
+          {(!props.currentSummary || props.currentSummary.emailId !== email.id) && email.summary && (
+             <div className="on-demand-summary-section">
+               <h4>Summary:</h4>
+               <p className="summary-text">{email.summary}</p>
+             </div>
+          )}
+
           {/*
           <details>
             <summary>Body (Plain Text)</summary>
